@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { useSearchParams, useRouter } from "next/navigation";
@@ -24,7 +24,7 @@ function IconSearch() {
   );
 }
 
-export default function OTPVerifyPage() {
+function OTPVerifyInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
 
@@ -238,5 +238,13 @@ export default function OTPVerifyPage() {
         </div>
       </main>
     </div>
+  );
+}
+
+export default function OTPVerifyPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-[#fbfbfb]" /> }>
+      <OTPVerifyInner />
+    </Suspense>
   );
 }
