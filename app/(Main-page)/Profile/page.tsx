@@ -799,7 +799,7 @@ export default function ProfilePage() {
                               className={cn(
                                 "h-11 rounded-xl border text-sm font-semibold transition",
                                 settings.theme === "dark"
-                                  ? "border-zinc-900 bg-zinc-900 text-white"
+                                  ? "border-zinc-900 bg-zinc-900 text-white"  
                                   : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50"
                               )}
                             >
@@ -807,7 +807,7 @@ export default function ProfilePage() {
                             </button>
                           </div>
                           <p className="mt-2 text-xs text-zinc-500">
-                            Save this section to apply dark mode, currency conversion, and language across the app.
+                            Save this section to apply , currency conversion, and language across the app.
                           </p>
                         </div>
                       </div>
