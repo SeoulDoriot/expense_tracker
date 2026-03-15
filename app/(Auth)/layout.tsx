@@ -1,6 +1,5 @@
 import React from "react";
 import AuthNavbar from "@/components/auth/AuthNavbar";
-import { supabase } from "@/src/lib/supabaseClient";
 
 export default function AuthLayout({ children }: { children: React.ReactNode }) {
   return (

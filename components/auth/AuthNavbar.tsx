@@ -27,8 +27,8 @@ function NavItem({ href, label }: { href: string; label: string }) {
 
 export default function AuthNavbar() {
   return (
-    <header className="auth-nav-enter sticky top-0 z-50 px-4 pt-4 sm:px-6 lg:px-8">
-      <div className="chrome-bar mx-auto max-w-7xl rounded-[28px] px-5 py-4 sm:px-6">
+    <header className="auth-nav-enter sticky top-0 z-50 px-6 pt-4 sm:px-8 lg:px-12">
+      <div className="chrome-bar w-full rounded-[28px] px-8 py-4 sm:px-10 lg:px-14">
         <div className="flex items-center gap-4">
           <Link href="/Welcome_Page" className="flex items-center gap-3">
             <Image

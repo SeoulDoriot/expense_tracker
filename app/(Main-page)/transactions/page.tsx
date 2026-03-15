@@ -1,10 +1,18 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { createTransaction, listTransactions, type DbTransaction } from "@/src/db/transactions";
+import {
+  createTransaction,
+  deleteTransaction,
+  listTransactions,
+  updateTransaction,
+  type DbTransaction,
+} from "@/src/db/transactions";
 import { readStoredJson, removeStoredValue, writeStoredJson } from "@/src/lib/browserStorage";
 import {
   convertCurrencyToUsd,
+  convertUsdToCurrency,
   formatAppCurrency,
   getCurrencyCode,
 } from "@/src/lib/appPreferences";
@@ -15,7 +23,8 @@ import {
 } from "@/src/lib/transactionCategories";
 
 type TxType = "Income" | "Expense";
-type TimeRange = "this_month" | "last_month";
+type TimeRange = "all_time" | "this_month" | "last_month";
+type ModalMode = "create" | "edit";
 
 type Transaction = {
   id: string;
@@ -23,7 +32,7 @@ type Transaction = {
   title: string;
   category: string;
   amount: number;
-  occurred_on: string; // YYYY-MM-DD
+  occurred_on: string;
   note?: string;
 };
 
@@ -71,16 +80,68 @@ function IconSearch() {
   );
 }
 
+function IconEdit() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+      <path
+        d="M4 20h4l10-10a2.1 2.1 0 0 0-4-4L4 16v4Z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function IconTrash() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+      <path d="M4 7h16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <path d="M10 11v6M14 11v6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <path d="M6 7l1 13h10l1-13" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+      <path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" stroke="currentColor" strokeWidth="2" />
+    </svg>
+  );
+}
+
 function Card({ children, className }: { children: React.ReactNode; className?: string }) {
   return (
     <div
       className={cn(
-        "rounded-2xl bg-white border border-zinc-100 shadow-[0_10px_25px_rgba(0,0,0,0.06)]",
+        "rounded-2xl border border-zinc-100 bg-white shadow-[0_10px_25px_rgba(0,0,0,0.06)]",
         className
       )}
     >
       {children}
     </div>
+  );
+}
+
+function SummaryCard({
+  label,
+  value,
+  tone = "neutral",
+}: {
+  label: string;
+  value: string;
+  tone?: "neutral" | "positive" | "negative";
+}) {
+  return (
+    <Card className="p-5">
+      <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-400">{label}</p>
+      <p
+        className={cn(
+          "mt-3 text-2xl font-semibold",
+          tone === "positive"
+            ? "text-emerald-600"
+            : tone === "negative"
+            ? "text-rose-600"
+            : "text-zinc-900"
+        )}
+      >
+        {value}
+      </p>
+    </Card>
   );
 }
 
@@ -123,7 +184,7 @@ function AmountPill({
 }) {
   const signedAmount = type === "Income" ? amount : -amount;
   return (
-    <span className={cn("text-sm font-semibold", type === "Income" ? "text-emerald-600" : "text-red-500")}>
+    <span className={cn("text-sm font-semibold", type === "Income" ? "text-emerald-600" : "text-rose-500")}>
       {formatAppCurrency(signedAmount, currency, language, {
         signed: true,
         maximumFractionDigits: currency === "KHR" ? 0 : 2,
@@ -137,12 +198,29 @@ function TypeChip({ type }: { type: TxType }) {
     <span
       className={cn(
         "inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold",
-        type === "Income" ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-600"
+        type === "Income" ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-600"
       )}
     >
       {type}
     </span>
   );
+}
+
+function formatEditableAmount(amountUsd: number, currency: "USD" | "KHR") {
+  const converted = convertUsdToCurrency(amountUsd, currency);
+  return currency === "KHR" ? String(Math.round(converted)) : converted.toFixed(2);
+}
+
+function mapDbTransaction(row: DbTransaction): Transaction {
+  return {
+    id: String(row.id),
+    type: row.type === "income" ? "Income" : "Expense",
+    title: String(row.title ?? ""),
+    category: String(row.category ?? "General"),
+    amount: typeof row.amount === "number" ? row.amount : Number(row.amount ?? 0),
+    occurred_on: typeof row.occurred_on === "string" ? row.occurred_on : String(row.occurred_on ?? ""),
+    note: row.note ?? undefined,
+  };
 }
 
 export default function TransactionsPage() {
@@ -151,30 +229,49 @@ export default function TransactionsPage() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
   const [saveLoading, setSaveLoading] = useState(false);
+  const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [draftReady, setDraftReady] = useState(false);
 
-  function mapDbTransaction(row: DbTransaction): Transaction {
-    return {
-      id: String(row.id),
-      type: row.type === "income" ? "Income" : "Expense",
-      title: String(row.title ?? ""),
-      category: String(row.category ?? "General"),
-      amount: typeof row.amount === "number" ? row.amount : Number(row.amount ?? 0),
-      occurred_on:
-        typeof row.occurred_on === "string"
-          ? row.occurred_on
-          : String(row.occurred_on ?? ""),
-      note: row.note ?? undefined,
-    };
+  const [filterType, setFilterType] = useState<"all" | TxType>("all");
+  const [range, setRange] = useState<TimeRange>("all_time");
+  const [search, setSearch] = useState("");
+
+  const [open, setOpen] = useState(false);
+  const [modalMode, setModalMode] = useState<ModalMode>("create");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [formType, setFormType] = useState<TxType>("Expense");
+  const [formTitle, setFormTitle] = useState("");
+  const [formCategory, setFormCategory] = useState("");
+  const [formAmount, setFormAmount] = useState("0.00");
+  const [formDate, setFormDate] = useState(toYYYYMMDD(new Date()));
+  const [formNote, setFormNote] = useState("");
+  const categoryOptions = useMemo(() => getTransactionCategories(formType), [formType]);
+
+  function applyDraft(draft?: TransactionDraft | null) {
+    setFormType(draft?.formType ?? "Expense");
+    setFormTitle(draft?.formTitle ?? "");
+    setFormCategory(draft?.formCategory ?? "");
+    setFormAmount(draft?.formAmount ?? "0.00");
+    setFormDate(draft?.formDate ?? toYYYYMMDD(new Date()));
+    setFormNote(draft?.formNote ?? "");
   }
 
-  async function loadTransactions() {
+  const restoreCreateDraft = useCallback(() => {
+    applyDraft(readStoredJson<TransactionDraft>(TRANSACTION_DRAFT_KEY));
+  }, []);
+
+  function clearCreateDraft() {
+    removeStoredValue(TRANSACTION_DRAFT_KEY);
+    applyDraft(null);
+  }
+
+  const loadTransactions = useCallback(async () => {
     setLoading(true);
     setErrorMsg(null);
 
     try {
-      const data = await listTransactions(200);
+      const data = await listTransactions(300);
       setTransactions(data.map(mapDbTransaction));
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to load transactions.";
@@ -186,42 +283,19 @@ export default function TransactionsPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [router]);
 
   useEffect(() => {
     void loadTransactions();
-  }, [router]);
-
-  const [filterType, setFilterType] = useState<"all" | TxType>("all");
-  const [range, setRange] = useState<TimeRange>("this_month");
-  const [search, setSearch] = useState("");
-
-  const [open, setOpen] = useState(false);
-  const [formType, setFormType] = useState<TxType>("Expense");
-  const [formTitle, setFormTitle] = useState("");
-  const [formCategory, setFormCategory] = useState("");
-  const [formAmount, setFormAmount] = useState("0.00");
-  const [formDate, setFormDate] = useState(toYYYYMMDD(new Date()));
-  const [formNote, setFormNote] = useState("");
-  const categoryOptions = useMemo(() => getTransactionCategories(formType), [formType]);
+  }, [loadTransactions]);
 
   useEffect(() => {
-    const draft = readStoredJson<TransactionDraft>(TRANSACTION_DRAFT_KEY);
-
-    if (draft) {
-      setFormType(draft.formType ?? "Expense");
-      setFormTitle(draft.formTitle ?? "");
-      setFormCategory(draft.formCategory ?? "");
-      setFormAmount(draft.formAmount ?? "0.00");
-      setFormDate(draft.formDate ?? toYYYYMMDD(new Date()));
-      setFormNote(draft.formNote ?? "");
-    }
-
+    restoreCreateDraft();
     setDraftReady(true);
-  }, []);
+  }, [restoreCreateDraft]);
 
   useEffect(() => {
-    if (!draftReady) {
+    if (!draftReady || modalMode !== "create") {
       return;
     }
 
@@ -233,7 +307,7 @@ export default function TransactionsPage() {
       formDate,
       formNote,
     });
-  }, [draftReady, formAmount, formCategory, formDate, formNote, formTitle, formType]);
+  }, [draftReady, formAmount, formCategory, formDate, formNote, formTitle, formType, modalMode]);
 
   useEffect(() => {
     if (!formCategory) {
@@ -249,7 +323,10 @@ export default function TransactionsPage() {
     const q = search.trim().toLowerCase();
 
     return transactions
-      .filter((t) => (range === "this_month" ? isInThisMonth(t.occurred_on) : isInLastMonth(t.occurred_on)))
+      .filter((t) => {
+        if (range === "all_time") return true;
+        return range === "this_month" ? isInThisMonth(t.occurred_on) : isInLastMonth(t.occurred_on);
+      })
       .filter((t) => (filterType === "all" ? true : t.type === filterType))
       .filter((t) => {
         if (!q) return true;
@@ -259,24 +336,56 @@ export default function TransactionsPage() {
           (t.note || "").toLowerCase().includes(q)
         );
       })
-      .sort((a, b) => parseDateYYYYMMDD(b.occurred_on).getTime() - parseDateYYYYMMDD(a.occurred_on).getTime());
+      .sort(
+        (a, b) =>
+          parseDateYYYYMMDD(b.occurred_on).getTime() - parseDateYYYYMMDD(a.occurred_on).getTime()
+      );
   }, [transactions, filterType, range, search]);
 
+  const filteredStats = useMemo(() => {
+    const income = filtered.filter((t) => t.type === "Income").reduce((sum, t) => sum + t.amount, 0);
+    const expense = filtered.filter((t) => t.type === "Expense").reduce((sum, t) => sum + t.amount, 0);
+    return {
+      income,
+      expense,
+      net: income - expense,
+      count: filtered.length,
+    };
+  }, [filtered]);
+
   function openAddModal() {
+    setModalMode("create");
+    setEditingId(null);
+    restoreCreateDraft();
+    setErrorMsg(null);
     setOpen(true);
   }
 
-  function resetForm() {
-    setFormType("Expense");
-    setFormTitle("");
-    setFormCategory("");
-    setFormAmount("0.00");
-    setFormDate(toYYYYMMDD(new Date()));
-    setFormNote("");
-    removeStoredValue(TRANSACTION_DRAFT_KEY);
+  function openEditModal(transaction: Transaction) {
+    setModalMode("edit");
+    setEditingId(transaction.id);
+    setFormType(transaction.type);
+    setFormTitle(transaction.title);
+    setFormCategory(transaction.category);
+    setFormAmount(formatEditableAmount(transaction.amount, settings.currency));
+    setFormDate(transaction.occurred_on);
+    setFormNote(transaction.note ?? "");
+    setErrorMsg(null);
+    setOpen(true);
   }
 
-  async function addTransaction() {
+  function closeModal() {
+    setOpen(false);
+    setErrorMsg(null);
+
+    if (modalMode === "edit") {
+      setModalMode("create");
+      setEditingId(null);
+      restoreCreateDraft();
+    }
+  }
+
+  async function saveTransaction() {
     const amt = Number(formAmount);
 
     if (!formTitle.trim() || !formCategory.trim() || !formDate.trim()) {
@@ -293,17 +402,31 @@ export default function TransactionsPage() {
     setErrorMsg(null);
 
     try {
-      const created = await createTransaction({
+      const payload = {
         title: formTitle.trim(),
         type: formType === "Income" ? "income" : "expense",
         category: formCategory.trim(),
         amount: Math.round(convertCurrencyToUsd(amt, settings.currency) * 100) / 100,
         occurred_on: formDate,
         note: formNote.trim() ? formNote.trim() : null,
-      });
+      } as const;
 
-      setTransactions((prev) => [mapDbTransaction(created), ...prev]);
-      resetForm();
+      if (modalMode === "edit" && editingId) {
+        const updated = await updateTransaction(editingId, payload);
+        setTransactions((prev) =>
+          prev.map((transaction) =>
+            transaction.id === editingId ? mapDbTransaction(updated) : transaction
+          )
+        );
+        setModalMode("create");
+        setEditingId(null);
+        restoreCreateDraft();
+      } else {
+        const created = await createTransaction(payload);
+        setTransactions((prev) => [mapDbTransaction(created), ...prev]);
+        clearCreateDraft();
+      }
+
       setOpen(false);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to save transaction.";
@@ -317,7 +440,37 @@ export default function TransactionsPage() {
     }
   }
 
-    return (
+  async function handleDelete(transaction: Transaction) {
+    if (!window.confirm(`Delete "${transaction.title}"? This cannot be undone.`)) {
+      return;
+    }
+
+    setActionLoadingId(transaction.id);
+    setErrorMsg(null);
+
+    try {
+      await deleteTransaction(transaction.id);
+      setTransactions((prev) => prev.filter((item) => item.id !== transaction.id));
+
+      if (editingId === transaction.id) {
+        setModalMode("create");
+        setEditingId(null);
+        restoreCreateDraft();
+        setOpen(false);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to delete transaction.";
+      setErrorMsg(message);
+
+      if (message === "Not logged in.") {
+        router.push("/Log_in");
+      }
+    } finally {
+      setActionLoadingId(null);
+    }
+  }
+
+  return (
     <div className="min-h-screen bg-transparent">
       <style jsx global>{`
         @media (prefers-reduced-motion: reduce) {
@@ -338,15 +491,12 @@ export default function TransactionsPage() {
         .hover-lift:hover { transform: translateY(-2px); box-shadow: 0 18px 45px rgba(15, 23, 42, 0.10); }
       `}</style>
 
-      {/* ✅ NO header here → avoids duplicate navbar */}
       <main className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-8 lg:px-10">
-        {/* Big centered white card like your Dashboard */}
-        <div className="motion-safe-anim fade-up d1 rounded-[28px] bg-white shadow-[0_18px_60px_rgba(0,0,0,0.12)] ring-1 ring-black/5 flex flex-col min-h-[calc(100vh-140px)]">
-          {/* Header */}
+        <div className="motion-safe-anim fade-up d1 flex min-h-[calc(100vh-140px)] flex-col rounded-[28px] bg-white shadow-[0_18px_60px_rgba(0,0,0,0.12)] ring-1 ring-black/5">
           <div className="flex flex-wrap items-start justify-between gap-4 px-6 pt-7 sm:px-8">
             <div>
-              <h1 className="text-2xl font-semibold text-zinc-900">Transaction</h1>
-              <p className="mt-1 text-sm text-zinc-500">Overview of your finance &amp; latest review.</p>
+              <h1 className="text-2xl font-semibold text-zinc-900">Transactions</h1>
+              <p className="mt-1 text-sm text-zinc-500">Create, edit, search, and clean up every record.</p>
             </div>
 
             <button
@@ -358,9 +508,34 @@ export default function TransactionsPage() {
             </button>
           </div>
 
-          {/* Filters row */}
-          <div className="px-6 pb-6 pt-6 sm:px-8 flex-1 flex flex-col">
-            <div className="motion-safe-anim fade-up d2 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-zinc-200 bg-white px-4 py-3">
+          <div className="px-6 pb-6 pt-6 sm:px-8">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <SummaryCard
+                label="Net"
+                value={formatAppCurrency(filteredStats.net, settings.currency, settings.language, {
+                  signed: true,
+                  maximumFractionDigits: settings.currency === "KHR" ? 0 : 2,
+                })}
+                tone={filteredStats.net >= 0 ? "positive" : "negative"}
+              />
+              <SummaryCard
+                label="Income"
+                value={formatAppCurrency(filteredStats.income, settings.currency, settings.language, {
+                  maximumFractionDigits: settings.currency === "KHR" ? 0 : 2,
+                })}
+                tone="positive"
+              />
+              <SummaryCard
+                label="Expense"
+                value={formatAppCurrency(filteredStats.expense, settings.currency, settings.language, {
+                  maximumFractionDigits: settings.currency === "KHR" ? 0 : 2,
+                })}
+                tone="negative"
+              />
+              <SummaryCard label="Records" value={String(filteredStats.count)} />
+            </div>
+
+            <div className="motion-safe-anim fade-up d2 mt-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-zinc-200 bg-white px-4 py-3">
               <div className="flex flex-wrap items-center gap-2">
                 {(["all", "Income", "Expense"] as const).map((k) => {
                   const active = filterType === k;
@@ -386,6 +561,7 @@ export default function TransactionsPage() {
                   onChange={(e) => setRange(e.target.value as TimeRange)}
                   className="h-9 rounded-xl border border-zinc-200 bg-white px-3 text-sm font-semibold text-zinc-700 outline-none hover:bg-zinc-50"
                 >
+                  <option value="all_time">All Time</option>
                   <option value="this_month">This Month</option>
                   <option value="last_month">Last Month</option>
                 </select>
@@ -404,67 +580,101 @@ export default function TransactionsPage() {
               </div>
             </div>
 
-            {/* Table header */}
-            <div className="mt-5 grid grid-cols-[44px_1fr_120px] sm:grid-cols-[44px_1fr_140px_120px] items-center px-2 text-xs font-semibold text-zinc-500">
+            {errorMsg ? (
+              <div className="mt-4 rounded-2xl border border-rose-100 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                {errorMsg}
+              </div>
+            ) : null}
+
+            <div className="mt-5 grid grid-cols-[44px_1fr_120px_110px] items-center px-2 text-xs font-semibold text-zinc-500 sm:grid-cols-[44px_1fr_140px_120px_130px]">
               <div />
               <div>Title</div>
               <div className="text-right">Amount</div>
               <div className="hidden sm:block text-right">Status</div>
+              <div className="text-right">Actions</div>
             </div>
 
-            {/* Rows */}
             <div className="mt-3 flex-1 space-y-3 overflow-auto pr-1">
               {loading ? (
-                <div className="motion-safe-anim fade-up d3 flex-1 rounded-2xl border border-zinc-100 bg-zinc-50 px-4 py-14 text-center text-sm text-zinc-500 flex items-center justify-center">
+                <div className="motion-safe-anim fade-up d3 flex items-center justify-center rounded-2xl border border-zinc-100 bg-zinc-50 px-4 py-14 text-center text-sm text-zinc-500">
                   Loading transactions...
                 </div>
               ) : filtered.length === 0 ? (
-                <div className="motion-safe-anim fade-up d3 flex-1 rounded-2xl border border-zinc-100 bg-zinc-50 px-4 py-14 text-center text-sm text-zinc-500 flex items-center justify-center">
+                <div className="motion-safe-anim fade-up d3 flex items-center justify-center rounded-2xl border border-zinc-100 bg-zinc-50 px-4 py-14 text-center text-sm text-zinc-500">
                   No transactions found for this filter.
                 </div>
               ) : (
-                filtered.map((t) => (
+                filtered.map((transaction) => (
                   <div
-                    key={t.id}
+                    key={transaction.id}
                     className="hover-lift rounded-2xl border border-zinc-100 bg-white px-2 py-3"
                   >
-                    <div className="grid grid-cols-[44px_1fr_120px] sm:grid-cols-[44px_1fr_140px_120px] items-center">
+                    <div className="grid grid-cols-[44px_1fr_120px_110px] items-center gap-2 sm:grid-cols-[44px_1fr_140px_120px_130px]">
                       <div className="flex items-center justify-center">
                         <div
                           className={cn(
-                            "h-9 w-9 rounded-full flex items-center justify-center text-sm font-bold",
-                            t.type === "Income" ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-600"
+                            "flex h-9 w-9 items-center justify-center rounded-full text-sm font-bold",
+                            transaction.type === "Income"
+                              ? "bg-emerald-100 text-emerald-700"
+                              : "bg-rose-100 text-rose-600"
                           )}
                         >
-                          {t.type === "Income" ? "↗" : "↘"}
+                          {transaction.type === "Income" ? "↗" : "↘"}
                         </div>
                       </div>
 
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
-                          <p className="truncate text-sm font-semibold text-zinc-900">{t.title}</p>
-                          <TypeChip type={t.type} />
+                          <p className="truncate text-sm font-semibold text-zinc-900">{transaction.title}</p>
+                          <TypeChip type={transaction.type} />
                           <span className="inline-flex items-center rounded-full bg-zinc-100 px-2.5 py-1 text-[11px] font-semibold text-zinc-700">
-                            {t.category}
+                            {transaction.category}
                           </span>
                         </div>
                         <p className="mt-1 text-xs text-zinc-400">
-                          {t.occurred_on}
-                          {t.note ? ` • ${t.note}` : ""}
+                          {transaction.occurred_on}
+                          {transaction.note ? ` • ${transaction.note}` : ""}
                         </p>
                       </div>
 
                       <div className="text-right">
                         <AmountPill
-                          type={t.type}
-                          amount={t.amount}
+                          type={transaction.type}
+                          amount={transaction.amount}
                           currency={settings.currency}
                           language={settings.language}
                         />
                       </div>
 
-                      <div className="hidden sm:block text-right">
-                        <span className="text-xs font-semibold text-emerald-600">Paid</span>
+                      <div className="hidden text-right sm:block">
+                        <span
+                          className={cn(
+                            "text-xs font-semibold",
+                            transaction.type === "Income" ? "text-emerald-600" : "text-zinc-500"
+                          )}
+                        >
+                          {transaction.type === "Income" ? "Received" : "Paid"}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => openEditModal(transaction)}
+                          className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-zinc-200 text-zinc-600 transition hover:bg-zinc-50"
+                          aria-label={`Edit ${transaction.title}`}
+                        >
+                          <IconEdit />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleDelete(transaction)}
+                          disabled={actionLoadingId === transaction.id}
+                          className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-rose-200 text-rose-600 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
+                          aria-label={`Delete ${transaction.title}`}
+                        >
+                          <IconTrash />
+                        </button>
                       </div>
                     </div>
                   </div>
@@ -474,23 +684,30 @@ export default function TransactionsPage() {
           </div>
         </div>
 
-        {/* Modal */}
         {open ? (
           <div className="fixed inset-0 z-50">
-            <div className="absolute inset-0 bg-black/40" onClick={() => setOpen(false)} />
+            <div className="absolute inset-0 bg-black/40" onClick={closeModal} />
             <div className="absolute left-1/2 top-1/2 w-[92vw] max-w-lg -translate-x-1/2 -translate-y-1/2">
               <Card className="p-5">
                 <div className="flex items-center justify-between">
-                  <p className="text-sm font-semibold text-zinc-900">Add Transaction</p>
+                  <div>
+                    <p className="text-sm font-semibold text-zinc-900">
+                      {modalMode === "edit" ? "Edit Transaction" : "Add Transaction"}
+                    </p>
+                    <p className="mt-1 text-xs text-zinc-500">
+                      {modalMode === "edit"
+                        ? "Update the details and save the changes."
+                        : "Cash out = Expense, cash in = Income."}
+                    </p>
+                  </div>
                   <button
-                    className="h-9 w-9 rounded-lg hover:bg-zinc-50 flex items-center justify-center text-zinc-600"
-                    onClick={() => setOpen(false)}
+                    className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-600 hover:bg-zinc-50"
+                    onClick={closeModal}
                   >
                     <IconClose />
                   </button>
                 </div>
 
-                <p className="mt-1 text-xs text-zinc-500">Cash out = Expense, cash in = Income.</p>
                 {errorMsg ? <p className="mt-3 text-sm text-rose-600">{errorMsg}</p> : null}
 
                 <div className="mt-4 grid grid-cols-1 gap-4">
@@ -568,13 +785,29 @@ export default function TransactionsPage() {
                     />
                   </div>
 
-                  <button
-                    onClick={addTransaction}
-                    disabled={saveLoading}
-                    className="mt-1 h-10 w-full rounded-xl bg-[#111827] text-white text-sm font-semibold hover:bg-[#1F2937] transition"
-                  >
-                    {saveLoading ? "Saving..." : "Save Transaction"}
-                  </button>
+                  <div className="mt-1 flex items-center justify-end gap-3">
+                    <button
+                      type="button"
+                      onClick={closeModal}
+                      className="h-10 rounded-xl border border-zinc-200 bg-white px-4 text-sm font-semibold text-zinc-700 hover:bg-zinc-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void saveTransaction()}
+                      disabled={saveLoading}
+                      className="h-10 rounded-xl bg-[#111827] px-4 text-sm font-semibold text-white transition hover:bg-[#1F2937] disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {saveLoading
+                        ? modalMode === "edit"
+                          ? "Saving..."
+                          : "Creating..."
+                        : modalMode === "edit"
+                        ? "Save Changes"
+                        : "Save Transaction"}
+                    </button>
+                  </div>
                 </div>
               </Card>
             </div>

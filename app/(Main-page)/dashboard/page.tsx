@@ -1,6 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { createTransaction as createDbTransaction, deleteTransaction as deleteDbTransaction } from "@/src/db/transactions";
 import { supabase } from "@/src/lib/supabaseClient";
 import { readStoredJson, removeStoredValue, writeStoredJson } from "@/src/lib/browserStorage";
 import {
@@ -43,6 +45,15 @@ type DashboardDraft = {
   description: string;
   category: string;
   date: string;
+};
+
+type DashboardTransactionRow = {
+  id: string | number | null;
+  title: string | null;
+  type: string | null;
+  category: string | null;
+  occurred_on: string | null;
+  amount: number | string | null;
 };
 
 const DASHBOARD_DRAFT_KEY = "dashboard-transaction-draft";
@@ -181,6 +192,7 @@ export default function DashboardPage() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loadingTx, setLoadingTx] = useState(false);
   const [txError, setTxError] = useState<string | null>(null);
+  const [actionTransactionId, setActionTransactionId] = useState<string | null>(null);
 
   // Info modal
   const [openInfo, setOpenInfo] = useState<StatKey | null>(null);
@@ -269,7 +281,7 @@ export default function DashboardPage() {
 
       if (error) throw error;
 
-      const mapped: Transaction[] = (data ?? []).map((t: any) => {
+      const mapped: Transaction[] = ((data ?? []) as DashboardTransactionRow[]).map((t) => {
         const isIncome = String(t.type).toLowerCase() === "income";
         const signedAmount = isIncome ? Number(t.amount) : -Number(t.amount);
 
@@ -284,8 +296,9 @@ export default function DashboardPage() {
       });
 
       setTransactions(mapped);
-    } catch (e: any) {
-      setTxError(e?.message ?? "Failed to load transactions");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to load transactions";
+      setTxError(message);
     } finally {
       setLoadingTx(false);
     }
@@ -393,29 +406,17 @@ export default function DashboardPage() {
     setTxError(null);
 
     try {
-      const { data: sessionData, error: sessionErr } = await supabase.auth.getSession();
-      if (sessionErr) throw sessionErr;
-
-      const user = sessionData.session?.user;
-      if (!user) throw new Error("Not logged in.");
-
       const title = description.trim() ? description.trim() : txType === "Income" ? "Income" : "Expense";
       const categoryValue = category.trim();
       const occurredOn = date ? date : new Date().toISOString().slice(0, 10);
 
-      // DB expects type text; we store lower-case to keep consistent with policies
-      const dbType = txType === "Income" ? "income" : "expense";
-
-      const { error } = await supabase.from("transactions").insert({
-        user_id: user.id,
+      await createDbTransaction({
         title,
-        type: dbType,
+        type: txType === "Income" ? "income" : "expense",
         category: categoryValue,
         amount: Math.round(convertCurrencyToUsd(n, settings.currency) * 100) / 100,
         occurred_on: occurredOn,
       });
-
-      if (error) throw error;
 
       setAmount("");
       setDescription("");
@@ -424,8 +425,28 @@ export default function DashboardPage() {
       removeStoredValue(DASHBOARD_DRAFT_KEY);
 
       await loadTransactions();
-    } catch (e: any) {
-      setTxError(e?.message ?? "Failed to add transaction");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to add transaction";
+      setTxError(message);
+    }
+  }
+
+  async function handleDeleteTransaction(id: string) {
+    if (!window.confirm("Delete this transaction from the dashboard list?")) {
+      return;
+    }
+
+    setActionTransactionId(id);
+    setTxError(null);
+
+    try {
+      await deleteDbTransaction(id);
+      setTransactions((prev) => prev.filter((transaction) => transaction.id !== id));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to delete transaction";
+      setTxError(message);
+    } finally {
+      setActionTransactionId(null);
     }
   }
 
@@ -571,10 +592,16 @@ export default function DashboardPage() {
                   <p className="text-sm font-semibold text-zinc-900">Recent Transactions</p>
                   <p className="mt-1 text-xs text-zinc-500">Your latest financial activities</p>
                 </div>
-                <div className="hidden sm:flex items-center gap-2">
+                <div className="hidden items-center gap-2 sm:flex">
                   <span className="inline-flex items-center rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[11px] text-zinc-600">
                     Synced with Supabase
                   </span>
+                  <Link
+                    href="/transactions"
+                    className="inline-flex items-center rounded-full border border-zinc-200 bg-white px-3 py-1 text-[11px] font-semibold text-zinc-700 transition hover:bg-zinc-50"
+                  >
+                    Manage all
+                  </Link>
                 </div>
               </div>
 
@@ -605,6 +632,15 @@ export default function DashboardPage() {
                               {formatMoney(t.amount, settings.currency, settings.language)}
                             </p>
                           </div>
+
+                          <button
+                            type="button"
+                            onClick={() => void handleDeleteTransaction(t.id)}
+                            disabled={actionTransactionId === t.id}
+                            className="rounded-full border border-rose-200 px-3 py-1 text-[11px] font-semibold text-rose-600 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            Delete
+                          </button>
                         </div>
                       );
                     })

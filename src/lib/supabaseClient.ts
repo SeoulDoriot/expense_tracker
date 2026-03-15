@@ -16,7 +16,11 @@ function createBrowserClient() {
     return null;
   }
 
-  browserClient = createClient(supabaseUrl, supabaseAnonKey);
+  browserClient = createClient(supabaseUrl, supabaseAnonKey, {
+    auth: {
+      flowType: "pkce",
+    },
+  });
   return browserClient;
 }
 
@@ -42,5 +46,4 @@ export const supabase = new Proxy({} as SupabaseClient, {
     return value;
   },
 });
-
 

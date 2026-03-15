@@ -4,6 +4,7 @@ import { supabase } from "@/src/lib/supabaseClient";
 import { useEffect, useMemo, useState } from "react";
 import {
   formatAppCurrency,
+  getLocaleForLanguage,
   type AppCurrency,
   type AppLanguage,
 } from "@/src/lib/appPreferences";
@@ -20,6 +21,17 @@ type Transaction = {
   amount: number;
   occurred_on: string; // YYYY-MM-DD
   note?: string;
+};
+
+type TransactionRow = {
+  id: string | number;
+  user_id?: string | null;
+  type?: unknown;
+  title?: string | null;
+  category?: string | null;
+  amount?: number | string | null;
+  occurred_on?: string | Date | null;
+  note?: string | null;
 };
 
 function cn(...classes: Array<string | false | null | undefined>) {
@@ -57,6 +69,12 @@ function formatMoney(n: number, currency: AppCurrency, language: AppLanguage) {
   return formatAppCurrency(n, currency, language, {
     maximumFractionDigits: currency === "KHR" ? 0 : 2,
   });
+}
+
+function formatMonthLabel(d: Date, language: AppLanguage) {
+  return new Intl.DateTimeFormat(getLocaleForLanguage(language), {
+    month: "short",
+  }).format(d);
 }
 
 /* ---------- tiny icons (no external lib) ---------- */
@@ -155,8 +173,23 @@ function BarCompareChart({
       </div>
 
       <div className="px-6 pb-6 pt-4">
-        <div className="h-[220px] sm:h-[240px] w-full rounded-2xl bg-zinc-50 ring-1 ring-zinc-100">
+        <div className="grid grid-cols-2 gap-3">
+          <div className="rounded-2xl bg-emerald-50 px-4 py-3 ring-1 ring-emerald-100">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-emerald-700">Income</p>
+            <p className="mt-2 text-sm font-semibold text-emerald-950">{formatMoney(income, currency, language)}</p>
+          </div>
+          <div className="rounded-2xl bg-red-50 px-4 py-3 ring-1 ring-red-100">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-red-700">Expense</p>
+            <p className="mt-2 text-sm font-semibold text-red-950">{formatMoney(expense, currency, language)}</p>
+          </div>
+        </div>
+
+        <div className="mt-4 h-[240px] sm:h-[260px] w-full rounded-2xl bg-zinc-50 ring-1 ring-zinc-100">
           <svg viewBox="0 0 360 220" className="h-full w-full">
+            {[0.2, 0.4, 0.6, 0.8].map((t) => {
+              const y = 200 - t * 160;
+              return <line key={t} x1="38" y1={y} x2="322" y2={y} stroke="#E4E4E7" strokeWidth="1" />;
+            })}
             <line x1="30" y1="200" x2="340" y2="200" stroke="#E5E7EB" strokeWidth="2" />
 
             <rect x="90" y={200 - incomeH} width="70" height={incomeH} rx="12" fill="#10B981" opacity="0.85" />
@@ -168,23 +201,7 @@ function BarCompareChart({
             <text x="235" y="214" textAnchor="middle" fontSize="12" fill="#6B7280">
               Expense
             </text>
-
-            <text x="125" y={Math.max(28, 200 - incomeH - 10)} textAnchor="middle" fontSize="12" fill="#065F46">
-              {formatMoney(income, currency, language)}
-            </text>
-            <text x="235" y={Math.max(28, 200 - expenseH - 10)} textAnchor="middle" fontSize="12" fill="#7F1D1D">
-              {formatMoney(expense, currency, language)}
-            </text>
           </svg>
-        </div>
-
-        <div className="mt-3 flex items-center gap-4 text-xs text-zinc-500">
-          <span className="inline-flex items-center gap-2">
-            <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" /> Income
-          </span>
-          <span className="inline-flex items-center gap-2">
-            <span className="h-2.5 w-2.5 rounded-full bg-red-500" /> Expense
-          </span>
         </div>
       </div>
     </div>
@@ -195,13 +212,20 @@ function LineTrendChart({
   title,
   subtitle,
   points,
+  currency,
+  language,
 }: {
   title: string;
   subtitle: string;
   points: Array<{ xLabel: string; value: number }>;
+  currency: AppCurrency;
+  language: AppLanguage;
 }) {
   const values = points.map((p) => p.value);
   const max = Math.max(...values, 1);
+  const total = values.reduce((sum, value) => sum + value, 0);
+  const average = points.length ? total / points.length : 0;
+  const peak = values.length ? Math.max(...values) : 0;
 
   const W = 360;
   const H = 220;
@@ -219,6 +243,10 @@ function LineTrendChart({
   const d = coords
     .map((c, i) => `${i === 0 ? "M" : "L"} ${c.x.toFixed(1)} ${c.y.toFixed(1)}`)
     .join(" ");
+  const areaD =
+    coords.length > 0
+      ? `${d} L ${coords[coords.length - 1].x.toFixed(1)} ${(H - padY).toFixed(1)} L ${coords[0].x.toFixed(1)} ${(H - padY).toFixed(1)} Z`
+      : "";
 
   return (
     <div className="rounded-2xl bg-white shadow-[0_12px_30px_rgba(0,0,0,0.08)] ring-1 ring-black/5">
@@ -228,12 +256,30 @@ function LineTrendChart({
       </div>
 
       <div className="px-6 pb-6 pt-4">
-        <div className="h-[220px] sm:h-[240px] w-full rounded-2xl bg-zinc-50 ring-1 ring-zinc-100">
+        <div className="grid grid-cols-2 gap-3">
+          <div className="rounded-2xl bg-blue-50 px-4 py-3 ring-1 ring-blue-100">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-blue-700">Average / day</p>
+            <p className="mt-2 text-sm font-semibold text-blue-950">{formatMoney(average, currency, language)}</p>
+          </div>
+          <div className="rounded-2xl bg-indigo-50 px-4 py-3 ring-1 ring-indigo-100">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-indigo-700">Peak day</p>
+            <p className="mt-2 text-sm font-semibold text-indigo-950">{formatMoney(peak, currency, language)}</p>
+          </div>
+        </div>
+
+        <div className="mt-4 h-[240px] sm:h-[260px] w-full rounded-2xl bg-zinc-50 ring-1 ring-zinc-100">
           <svg viewBox={`0 0 ${W} ${H}`} className="h-full w-full">
+            <defs>
+              <linearGradient id="report-trend-fill" x1="0" x2="0" y1="0" y2="1">
+                <stop offset="0%" stopColor="#2F52FF" stopOpacity="0.24" />
+                <stop offset="100%" stopColor="#2F52FF" stopOpacity="0.02" />
+              </linearGradient>
+            </defs>
             {[0.25, 0.5, 0.75].map((t) => {
               const y = padY + t * innerH;
               return <line key={t} x1={padX} y1={y} x2={W - padX} y2={y} stroke="#E5E7EB" strokeWidth="1" />;
             })}
+            <path d={areaD} fill="url(#report-trend-fill)" />
             <path d={d} fill="none" stroke="#2F52FF" strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" />
             {coords.map((c, idx) => (
               <circle key={idx} cx={c.x} cy={c.y} r="4" fill="#2F52FF" opacity="0.9" />
@@ -245,6 +291,123 @@ function LineTrendChart({
           <span>{points[0]?.xLabel || ""}</span>
           <span>{points[Math.floor(points.length / 2)]?.xLabel || ""}</span>
           <span>{points[points.length - 1]?.xLabel || ""}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CategoryBreakdownCard({
+  title,
+  subtitle,
+  items,
+  currency,
+  language,
+}: {
+  title: string;
+  subtitle: string;
+  items: Array<{ label: string; amount: number; share: number }>;
+  currency: AppCurrency;
+  language: AppLanguage;
+}) {
+  return (
+    <div className="rounded-2xl bg-white shadow-[0_12px_30px_rgba(0,0,0,0.08)] ring-1 ring-black/5">
+      <div className="px-6 pt-6">
+        <p className="text-sm font-semibold text-zinc-900">{title}</p>
+        <p className="mt-1 text-xs text-zinc-500">{subtitle}</p>
+      </div>
+
+      <div className="px-6 pb-6 pt-5">
+        {items.length > 0 ? (
+          <div className="space-y-4">
+            {items.map((item) => (
+              <div key={item.label} className="rounded-2xl bg-zinc-50 px-4 py-4 ring-1 ring-zinc-100">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="truncate text-sm font-medium text-zinc-900">{item.label}</p>
+                  <p className="text-sm font-semibold text-zinc-700">
+                    {formatMoney(item.amount, currency, language)}
+                  </p>
+                </div>
+
+                <div className="mt-3 h-2.5 rounded-full bg-zinc-200">
+                  <div
+                    className="h-full rounded-full bg-[#2F52FF]"
+                    style={{ width: `${Math.max(10, Math.round(item.share * 100))}%` }}
+                  />
+                </div>
+
+                <p className="mt-2 text-[11px] text-zinc-500">{Math.round(item.share * 100)}% of this month&apos;s expense</p>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="rounded-2xl border border-dashed border-zinc-200 bg-zinc-50 px-5 py-10 text-center text-sm text-zinc-500">
+            No monthly expense categories yet.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function RecentMonthsCard({
+  title,
+  subtitle,
+  months,
+  currency,
+  language,
+}: {
+  title: string;
+  subtitle: string;
+  months: Array<{ label: string; income: number; expense: number; net: number }>;
+  currency: AppCurrency;
+  language: AppLanguage;
+}) {
+  return (
+    <div className="rounded-2xl bg-white shadow-[0_12px_30px_rgba(0,0,0,0.08)] ring-1 ring-black/5">
+      <div className="px-6 pt-6">
+        <p className="text-sm font-semibold text-zinc-900">{title}</p>
+        <p className="mt-1 text-xs text-zinc-500">{subtitle}</p>
+      </div>
+
+      <div className="px-6 pb-6 pt-5">
+        <div className="space-y-3">
+          {months.map((month) => (
+            <div key={month.label} className="rounded-2xl bg-zinc-50 px-4 py-4 ring-1 ring-zinc-100">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm font-semibold text-zinc-900">{month.label}</p>
+                <span
+                  className={cn(
+                    "rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em]",
+                    month.net >= 0 ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-700"
+                  )}
+                >
+                  {month.net >= 0 ? "Positive" : "Negative"}
+                </span>
+              </div>
+
+              <div className="mt-3 grid grid-cols-3 gap-3">
+                <div>
+                  <p className="text-[11px] text-zinc-500">Income</p>
+                  <p className="mt-1 text-xs font-semibold text-emerald-700">
+                    {formatMoney(month.income, currency, language)}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[11px] text-zinc-500">Expense</p>
+                  <p className="mt-1 text-xs font-semibold text-red-700">
+                    {formatMoney(month.expense, currency, language)}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[11px] text-zinc-500">Net</p>
+                  <p className={cn("mt-1 text-xs font-semibold", month.net >= 0 ? "text-zinc-900" : "text-red-700")}>
+                    {formatMoney(month.net, currency, language)}
+                  </p>
+                </div>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
     </div>
@@ -333,7 +496,7 @@ export default function ReportPage() {
         return;
       }
 
-      const normalized: Transaction[] = (data ?? []).map((row: any) => ({
+      const normalized: Transaction[] = ((data ?? []) as TransactionRow[]).map((row) => ({
         id: String(row.id),
         user_id: row.user_id ? String(row.user_id) : undefined,
         type: normalizeTransactionType(row.type),
@@ -360,30 +523,48 @@ export default function ReportPage() {
     };
   }, []);
 
-  const now = new Date();
-  const thisMonthKey = monthKey(now);
+  const thisMonthKey = monthKey(new Date());
 
   const computed = useMemo(() => {
+    const [currentYear, currentMonth] = thisMonthKey.split("-").map(Number);
+    const referenceMonth = new Date(currentYear, (currentMonth || 1) - 1, 1);
     let thisMonthIncome = 0;
     let thisMonthExpense = 0;
     let totalIncome = 0;
     let totalExpense = 0;
+    const monthExpenseByDay = new Map<string, number>();
+    const monthExpenseByCategory = new Map<string, number>();
+    const monthlyTotals = new Map<string, { income: number; expense: number }>();
 
     for (const t of tx) {
-      const amt = Number(t.amount) || 0;
-      const mKey = monthKey(parseDateYYYYMMDD(t.occurred_on));
+      const amt = Math.abs(Number(t.amount) || 0);
+      const occurredAt = parseDateYYYYMMDD(t.occurred_on);
+      const mKey = monthKey(occurredAt);
+      const monthlyEntry = monthlyTotals.get(mKey) ?? { income: 0, expense: 0 };
 
       if (t.type === "Income") {
         totalIncome += amt;
-        if (mKey === thisMonthKey) thisMonthIncome += amt;
+        monthlyEntry.income += amt;
+        if (mKey === thisMonthKey) {
+          thisMonthIncome += amt;
+        }
       } else {
         totalExpense += amt;
-        if (mKey === thisMonthKey) thisMonthExpense += amt;
+        monthlyEntry.expense += amt;
+        monthExpenseByDay.set(t.occurred_on, (monthExpenseByDay.get(t.occurred_on) ?? 0) + amt);
+
+        if (mKey === thisMonthKey) {
+          thisMonthExpense += amt;
+          const category = t.category.trim() || "Other";
+          monthExpenseByCategory.set(category, (monthExpenseByCategory.get(category) ?? 0) + amt);
+        }
       }
+
+      monthlyTotals.set(mKey, monthlyEntry);
     }
 
-    const monthExpenseAbs = Math.abs(thisMonthExpense);
-    const totalExpenseAbs = Math.abs(totalExpense);
+    const monthExpenseAbs = thisMonthExpense;
+    const totalExpenseAbs = totalExpense;
 
     const netWorth = totalIncome - totalExpenseAbs;
     const savingRate =
@@ -396,14 +577,30 @@ export default function ReportPage() {
       d.setDate(d.getDate() - i);
       const key = toYYYYMMDD(d);
       const short = `${pad2(d.getMonth() + 1)}/${pad2(d.getDate())}`;
-
-      let dayExpense = 0;
-      for (const t of tx) {
-        if (t.occurred_on === key && t.type === "Expense") dayExpense += Math.abs(Number(t.amount) || 0);
-      }
-
-      labels.push({ xLabel: short, value: dayExpense });
+      labels.push({ xLabel: short, value: monthExpenseByDay.get(key) ?? 0 });
     }
+
+    const topCategories = Array.from(monthExpenseByCategory.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 4)
+      .map(([label, amount]) => ({
+        label,
+        amount,
+        share: monthExpenseAbs > 0 ? amount / monthExpenseAbs : 0,
+      }));
+
+    const recentMonths = Array.from({ length: 4 }, (_, idx) => {
+      const date = new Date(referenceMonth.getFullYear(), referenceMonth.getMonth() - (3 - idx), 1);
+      const key = monthKey(date);
+      const totals = monthlyTotals.get(key) ?? { income: 0, expense: 0 };
+
+      return {
+        label: formatMonthLabel(date, settings.language),
+        income: totals.income,
+        expense: totals.expense,
+        net: totals.income - totals.expense,
+      };
+    });
 
     return {
       netWorth,
@@ -411,8 +608,10 @@ export default function ReportPage() {
       monthExpense: monthExpenseAbs,
       savingRate,
       trend: labels,
+      topCategories,
+      recentMonths,
     };
-  }, [tx, thisMonthKey]);
+  }, [tx, thisMonthKey, settings.language]);
 
   return (
     <div className="min-h-screen bg-transparent">
@@ -502,14 +701,36 @@ export default function ReportPage() {
             <div className="grid grid-cols-1 gap-5 sm:gap-6 lg:grid-cols-2">
               <BarCompareChart
                 title="Monthly Income vs Expense"
-                subtitle="Compare your monthly financial flow"
+                subtitle="A simpler side-by-side view of this month"
                 income={computed.monthIncome}
                 expense={computed.monthExpense}
                 currency={settings.currency}
                 language={settings.language}
               />
 
-              <LineTrendChart title="30-Day Spending Trend" subtitle="Your daily expense activity" points={computed.trend} />
+              <LineTrendChart
+                title="30-Day Spending Trend"
+                subtitle="Your daily expense activity in a cleaner chart"
+                points={computed.trend}
+                currency={settings.currency}
+                language={settings.language}
+              />
+
+              <CategoryBreakdownCard
+                title="Top Expense Categories"
+                subtitle="Where your spending is going this month"
+                items={computed.topCategories}
+                currency={settings.currency}
+                language={settings.language}
+              />
+
+              <RecentMonthsCard
+                title="Last 4 Months"
+                subtitle="A quick monthly snapshot that is easier to scan"
+                months={computed.recentMonths}
+                currency={settings.currency}
+                language={settings.language}
+              />
             </div>
 
             {!loading && tx.length === 0 ? (

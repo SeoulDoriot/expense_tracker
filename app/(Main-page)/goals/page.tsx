@@ -1,11 +1,17 @@
-// NEW VERSION: Goals are scoped per logged-in user using Supabase Auth + RLS.
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
-import { createClient } from "@supabase/supabase-js";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
+  createGoal,
+  deleteGoal,
+  listGoals,
+  updateGoal,
+  type DbGoal,
+} from "@/src/db/goals";
+import {
   convertCurrencyToUsd,
+  convertUsdToCurrency,
   formatAppCurrency,
   getCurrencyCode,
   type AppCurrency,
@@ -13,34 +19,16 @@ import {
 } from "@/src/lib/appPreferences";
 import { useAppPreferences } from "@/src/hooks/useAppPreferences";
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-const supabase =
-  supabaseUrl && supabaseAnonKey
-    ? createClient(supabaseUrl, supabaseAnonKey)
-    : null;
-
 type Goal = {
   id: string;
   title: string;
   target: number;
   saved: number;
   contributingMonthly: number;
-  imageUrl?: string;
-  image_url?: string | null; // persisted url (optional)
+  imageUrl: string | null;
 };
 
-type GoalRow = {
-  id: string;
-  title: string | null;
-  target_amount?: number | null;
-  target?: number | null;
-  saved_amount?: number | null;
-  saved?: number | null;
-  contributing_monthly?: number | null;
-  image_url?: string | null;
-};
+type GoalModalMode = "create" | "edit";
 
 function formatMoney(n: number, currency: AppCurrency, language: AppLanguage) {
   return formatAppCurrency(n, currency, language, {
@@ -48,143 +36,108 @@ function formatMoney(n: number, currency: AppCurrency, language: AppLanguage) {
   });
 }
 
+function formatEditableAmount(amountUsd: number, currency: AppCurrency) {
+  const converted = convertUsdToCurrency(amountUsd, currency);
+  return currency === "KHR" ? String(Math.round(converted)) : converted.toFixed(2);
+}
+
+function IconEdit() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+      <path
+        d="M4 20h4l10-10a2.1 2.1 0 0 0-4-4L4 16v4Z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function IconTrash() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+      <path d="M4 7h16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <path d="M10 11v6M14 11v6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <path d="M6 7l1 13h10l1-13" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+      <path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" stroke="currentColor" strokeWidth="2" />
+    </svg>
+  );
+}
+
+function SummaryCard({
+  label,
+  value,
+  helper,
+}: {
+  label: string;
+  value: string;
+  helper: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-zinc-100 bg-white p-5 shadow-sm se-hover-lift">
+      <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-400">{label}</p>
+      <p className="mt-3 text-2xl font-semibold text-zinc-900">{value}</p>
+      <p className="mt-2 text-xs text-zinc-500">{helper}</p>
+    </div>
+  );
+}
+
+function StatusChip({ done }: { done: boolean }) {
+  return (
+    <span
+      className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+        done ? "bg-emerald-50 text-emerald-700" : "bg-blue-50 text-blue-700"
+      }`}
+    >
+      {done ? "Completed" : "In progress"}
+    </span>
+  );
+}
+
+function mapGoalRow(row: DbGoal): Goal {
+  return {
+    id: String(row.id),
+    title: String(row.title ?? ""),
+    target: Number(row.target_amount ?? row.target ?? 0),
+    saved: Number(row.saved_amount ?? row.saved ?? 0),
+    contributingMonthly: Number(row.contributing_monthly ?? 0),
+    imageUrl: row.image_url ?? null,
+  };
+}
+
 export default function GoalsPage() {
   const router = useRouter();
   const { settings } = useAppPreferences();
 
-  const [userId, setUserId] = useState<string>("");
-
   const [goals, setGoals] = useState<Goal[]>([]);
   const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string>("");
+  const [loadError, setLoadError] = useState("");
   const [savingGoal, setSavingGoal] = useState(false);
+  const [actionGoalId, setActionGoalId] = useState<string | null>(null);
 
   const [open, setOpen] = useState(false);
+  const [modalMode, setModalMode] = useState<GoalModalMode>("create");
+  const [editingGoalId, setEditingGoalId] = useState<string | null>(null);
 
   const [title, setTitle] = useState("");
-  const [target, setTarget] = useState<string>("");
-  const [saved, setSaved] = useState<string>("");
-  const [contributingMonthly, setContributingMonthly] = useState<string>("50");
+  const [target, setTarget] = useState("");
+  const [saved, setSaved] = useState("");
+  const [contributingMonthly, setContributingMonthly] = useState("50");
+  const [imagePreviewUrl, setImagePreviewUrl] = useState("");
+  const [imageFileName, setImageFileName] = useState("");
 
-  const [imagePreviewUrl, setImagePreviewUrl] = useState<string>("");
-  const [imageFileName, setImageFileName] = useState<string>("");
-
-  const totalSaved = useMemo(
-    () => goals.reduce((sum, g) => sum + g.saved, 0),
+  const totalSaved = useMemo(() => goals.reduce((sum, goal) => sum + goal.saved, 0), [goals]);
+  const totalTarget = useMemo(() => goals.reduce((sum, goal) => sum + goal.target, 0), [goals]);
+  const completedGoals = useMemo(
+    () => goals.filter((goal) => goal.saved >= goal.target && goal.target > 0).length,
     [goals]
   );
-
-  function mapGoalRow(row: GoalRow): Goal {
-    return {
-      id: String(row.id),
-      title: String(row.title ?? ""),
-      target: Number(row.target_amount ?? row.target ?? 0),
-      saved: Number(row.saved_amount ?? row.saved ?? 0),
-      contributingMonthly: Number(row.contributing_monthly ?? 50),
-      image_url: row.image_url ?? null,
-    };
-  }
-
-  // 1) Require Auth: get user on mount
-  useEffect(() => {
-    let cancelled = false;
-
-    async function init() {
-      setLoadError("");
-
-      if (!supabase) {
-        setLoading(false);
-        setLoadError(
-          "Supabase env is missing. Please set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY."
-        );
-        return;
-      }
-
-      const { data, error } = await supabase.auth.getUser();
-
-      if (cancelled) return;
-
-      if (error) {
-        setLoading(false);
-        setLoadError(error.message);
-        return;
-      }
-
-      const uid = data.user?.id;
-
-      if (!uid) {
-        // Not logged in → send to your login page
-        // Update this path if your login route is different.
-        router.push("/Log_in");
-        return;
-      }
-
-      setUserId(uid);
-    }
-
-    init();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [router]);
-
-  // 2) Load goals for this user
-  useEffect(() => {
-    let cancelled = false;
-
-    async function load() {
-      if (!supabase) return;
-      if (!userId) return;
-
-      setLoading(true);
-      setLoadError("");
-
-      // Try ordering by created_at first
-      let data: GoalRow[] | null = null;
-      let error: Error | null = null;
-
-      {
-        const res = await supabase
-          .from("goals")
-          .select("id,title,target_amount,target,saved_amount,saved,contributing_monthly,image_url,created_at,user_id")
-          .eq("user_id", userId)
-          .order("created_at", { ascending: false });
-
-        data = res.data as GoalRow[] | null;
-        error = res.error;
-      }
-
-      // If created_at doesn't exist, retry without ordering
-      if (error && String(error.message || "").toLowerCase().includes("created_at")) {
-        const res2 = await supabase
-          .from("goals")
-          .select("id,title,target_amount,target,saved_amount,saved,contributing_monthly,image_url,user_id")
-          .eq("user_id", userId);
-
-        data = res2.data as GoalRow[] | null;
-        error = res2.error;
-      }
-
-      if (cancelled) return;
-
-      if (error) {
-        setLoadError(error.message);
-        setGoals([]);
-      } else {
-        const mapped: Goal[] = (data ?? []).map(mapGoalRow);
-        setGoals(mapped);
-      }
-
-      setLoading(false);
-    }
-
-    load();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [userId]);
+  const completionRate = useMemo(() => {
+    if (goals.length === 0) return 0;
+    const totalPercent = goals.reduce((sum, goal) => sum + Math.min(100, (goal.saved / goal.target) * 100), 0);
+    return Math.round(totalPercent / goals.length);
+  }, [goals]);
 
   function resetForm() {
     setTitle("");
@@ -197,7 +150,54 @@ export default function GoalsPage() {
 
   function closeModal() {
     setOpen(false);
+    setModalMode("create");
+    setEditingGoalId(null);
+    setLoadError("");
     resetForm();
+  }
+
+  const loadGoalList = useCallback(async () => {
+    setLoading(true);
+    setLoadError("");
+
+    try {
+      const data = await listGoals();
+      setGoals(data.map(mapGoalRow));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to load goals.";
+      setLoadError(message);
+
+      if (message === "Not logged in.") {
+        router.push("/Log_in");
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [router]);
+
+  useEffect(() => {
+    void loadGoalList();
+  }, [loadGoalList]);
+
+  function openCreateModal() {
+    resetForm();
+    setModalMode("create");
+    setEditingGoalId(null);
+    setLoadError("");
+    setOpen(true);
+  }
+
+  function openEditModal(goal: Goal) {
+    setModalMode("edit");
+    setEditingGoalId(goal.id);
+    setTitle(goal.title);
+    setTarget(formatEditableAmount(goal.target, settings.currency));
+    setSaved(formatEditableAmount(goal.saved, settings.currency));
+    setContributingMonthly(formatEditableAmount(goal.contributingMonthly, settings.currency));
+    setImagePreviewUrl(goal.imageUrl ?? "");
+    setImageFileName(goal.imageUrl ? "Existing image" : "");
+    setLoadError("");
+    setOpen(true);
   }
 
   function onPickImage(e: React.ChangeEvent<HTMLInputElement>) {
@@ -230,18 +230,15 @@ export default function GoalsPage() {
     e.target.value = "";
   }
 
-  async function addGoal() {
-    if (!supabase) return;
-    if (!userId) return;
-
+  async function saveGoal() {
     setLoadError("");
 
-    const t = title.trim();
+    const cleanTitle = title.trim();
     const targetNum = convertCurrencyToUsd(Number(target), settings.currency);
     const savedNum = convertCurrencyToUsd(Number(saved || "0"), settings.currency);
     const contribNum = convertCurrencyToUsd(Number(contributingMonthly || "0"), settings.currency);
 
-    if (!t) {
+    if (!cleanTitle) {
       setLoadError("Goal title is required.");
       return;
     }
@@ -258,81 +255,91 @@ export default function GoalsPage() {
       return;
     }
 
-    const safeSaved = Math.min(savedNum, targetNum);
-    const persistedImageUrl = imagePreviewUrl || null;
+    const normalizedSaved = Math.min(savedNum, targetNum);
 
-    const optimistic: Goal = {
-      id: `tmp_${Date.now()}`,
-      title: t,
-      target: targetNum,
-      saved: safeSaved,
-      contributingMonthly: contribNum || 0,
-      imageUrl: persistedImageUrl ?? undefined,
-      image_url: persistedImageUrl,
-    };
-
-    setGoals((prev) => [optimistic, ...prev]);
     setSavingGoal(true);
 
-    const { data, error } = await supabase
-      .from("goals")
-      .insert({
-        user_id: userId,
-        title: t,
+    try {
+      const payload = {
+        title: cleanTitle,
         target_amount: targetNum,
-        target: targetNum,
-        saved_amount: safeSaved,
-        saved: safeSaved,
-        contributing_monthly: contribNum || 0,
-        image_url: persistedImageUrl,
-      })
-      .select("id,title,target_amount,target,saved_amount,saved,contributing_monthly,image_url,created_at,user_id")
-      .single();
+        saved_amount: normalizedSaved,
+        contributing_monthly: contribNum,
+        image_url: imagePreviewUrl || null,
+      };
 
-    if (error) {
-      setGoals((prev) => prev.filter((g) => g.id !== optimistic.id));
-      setLoadError(error.message);
+      if (modalMode === "edit" && editingGoalId) {
+        const updated = await updateGoal(editingGoalId, payload);
+        setGoals((prev) =>
+          prev.map((goal) => (goal.id === editingGoalId ? mapGoalRow(updated) : goal))
+        );
+      } else {
+        const created = await createGoal(payload);
+        setGoals((prev) => [mapGoalRow(created), ...prev]);
+      }
+
+      closeModal();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to save goal.";
+      setLoadError(message);
+
+      if (message === "Not logged in.") {
+        router.push("/Log_in");
+      }
+    } finally {
       setSavingGoal(false);
+    }
+  }
+
+  async function handleDelete(goal: Goal) {
+    if (!window.confirm(`Delete "${goal.title}"? This cannot be undone.`)) {
       return;
     }
 
-    const real: Goal = {
-      ...mapGoalRow(data as GoalRow),
-      imageUrl: persistedImageUrl ?? undefined,
-    };
+    setActionGoalId(goal.id);
+    setLoadError("");
 
-    setGoals((prev) => [real, ...prev.filter((g) => g.id !== optimistic.id)]);
-    closeModal();
-    setSavingGoal(false);
+    try {
+      await deleteGoal(goal.id);
+      setGoals((prev) => prev.filter((item) => item.id !== goal.id));
+
+      if (editingGoalId === goal.id) {
+        closeModal();
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to delete goal.";
+      setLoadError(message);
+
+      if (message === "Not logged in.") {
+        router.push("/Log_in");
+      }
+    } finally {
+      setActionGoalId(null);
+    }
   }
 
-  async function addContribution(goalId: string, amount: number) {
-    if (!supabase) return;
-    if (!userId) return;
+  async function addMonthlyContribution(goal: Goal) {
+    if (goal.saved >= goal.target) {
+      return;
+    }
 
-    // optimistic UI
-    setGoals((prev) =>
-      prev.map((g) =>
-        g.id === goalId ? { ...g, saved: Math.min(g.target, g.saved + amount) } : g
-      )
-    );
+    setActionGoalId(goal.id);
+    setLoadError("");
 
-    const current = goals.find((g) => g.id === goalId);
-    if (!current) return;
+    try {
+      const updated = await updateGoal(goal.id, {
+        saved_amount: Math.min(goal.target, goal.saved + Math.max(goal.contributingMonthly, 0)),
+      });
+      setGoals((prev) => prev.map((item) => (item.id === goal.id ? mapGoalRow(updated) : item)));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to add contribution.";
+      setLoadError(message);
 
-    const newSaved = Math.min(current.target, current.saved + amount);
-
-    const { error } = await supabase
-      .from("goals")
-      .update({
-        saved_amount: newSaved,
-        saved: newSaved,
-      })
-      .eq("id", goalId)
-      .eq("user_id", userId);
-
-    if (error) {
-      setLoadError(error.message);
+      if (message === "Not logged in.") {
+        router.push("/Log_in");
+      }
+    } finally {
+      setActionGoalId(null);
     }
   }
 
@@ -369,114 +376,174 @@ export default function GoalsPage() {
         .se-btn { transition: transform 180ms ease, box-shadow 180ms ease, opacity 180ms ease, background-color 180ms ease; }
         .se-btn:active { transform: translateY(1px); }
       `}</style>
+
       <main className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 lg:px-10">
-        <div className="rounded-[28px] bg-white shadow-[0_18px_60px_rgba(0,0,0,0.12)] ring-1 ring-black/5 min-h-[calc(100vh-140px)] se-motion se-page-in">
+        <div className="min-h-[calc(100vh-140px)] rounded-[28px] bg-white shadow-[0_18px_60px_rgba(0,0,0,0.12)] ring-1 ring-black/5 se-motion se-page-in">
           <div className="px-6 py-8 sm:px-8">
-        <div className="mb-8 flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-semibold text-zinc-900">Goals</h1>
-            <p className="mt-1 text-sm text-zinc-500">Track and achieve your savings goals.</p>
-          </div>
+            <div className="mb-8 flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <h1 className="text-3xl font-semibold text-zinc-900">Goals</h1>
+                <p className="mt-1 text-sm text-zinc-500">Create, update, fund, and close out your savings targets.</p>
+              </div>
 
-          <button
-            type="button"
-            onClick={() => setOpen(true)}
-            className="rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-medium text-white shadow-md se-btn hover:bg-blue-700"
-          >
-            + Create Goal
-          </button>
-        </div>
-
-        {loadError ? (
-          <div className="mb-6 rounded-2xl border border-rose-100 bg-rose-50 p-4 text-sm text-rose-700">
-            {loadError}
-          </div>
-        ) : null}
-
-        {loading ? <p className="mb-6 text-sm text-zinc-500">Loading goals…</p> : null}
-
-        <div className="mb-8">
-          <div className="rounded-2xl border border-zinc-100 bg-white p-6 shadow-sm se-hover-lift">
-            <p className="text-sm text-zinc-500">Total Saved</p>
-            <h2 className="mt-1 text-2xl font-semibold text-zinc-900">
-              {formatMoney(totalSaved, settings.currency, settings.language)}
-            </h2>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-          {goals.map((g, idx) => {
-            const pct = Math.max(0, Math.min(100, Math.round((g.saved / g.target) * 100)));
-
-            return (
-              <div
-                key={g.id}
-                className="rounded-2xl border border-zinc-100 bg-white p-6 shadow-sm se-motion se-card-in se-hover-lift"
-                style={{ animationDelay: `${Math.min(idx, 12) * 60}ms` }}
+              <button
+                type="button"
+                onClick={openCreateModal}
+                className="rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-medium text-white shadow-md se-btn hover:bg-blue-700"
               >
-                <div className="mb-4 flex items-start justify-between gap-4">
-                  <div className="flex items-center gap-3">
-                    <div className="h-12 w-12 overflow-hidden rounded-xl border border-zinc-200 bg-zinc-50">
-                      {g.image_url || g.imageUrl ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={(g.image_url || g.imageUrl) as string}
-                          alt="goal"
-                          className="h-full w-full object-cover"
-                        />
-                      ) : (
-                        <div className="flex h-full w-full items-center justify-center text-[11px] font-semibold text-zinc-400">
-                          IMG
+                + Create Goal
+              </button>
+            </div>
+
+            {loadError ? (
+              <div className="mb-6 rounded-2xl border border-rose-100 bg-rose-50 p-4 text-sm text-rose-700">
+                {loadError}
+              </div>
+            ) : null}
+
+            <div className="mb-8 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <SummaryCard
+                label="Saved"
+                value={formatMoney(totalSaved, settings.currency, settings.language)}
+                helper="Total money already assigned to goals."
+              />
+              <SummaryCard
+                label="Target"
+                value={formatMoney(totalTarget, settings.currency, settings.language)}
+                helper="Combined value of all current goals."
+              />
+              <SummaryCard
+                label="Completed"
+                value={`${completedGoals}/${goals.length || 0}`}
+                helper="Goals that already reached 100%."
+              />
+              <SummaryCard
+                label="Average Progress"
+                value={`${completionRate}%`}
+                helper="Average completion across all goals."
+              />
+            </div>
+
+            {loading ? <p className="mb-6 text-sm text-zinc-500">Loading goals…</p> : null}
+
+            <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+              {goals.map((goal, idx) => {
+                const pct = goal.target > 0 ? Math.max(0, Math.min(100, Math.round((goal.saved / goal.target) * 100))) : 0;
+                const remaining = Math.max(0, goal.target - goal.saved);
+                const monthsLeft =
+                  goal.contributingMonthly > 0 && remaining > 0
+                    ? Math.ceil(remaining / goal.contributingMonthly)
+                    : 0;
+                const done = pct >= 100;
+
+                return (
+                  <div
+                    key={goal.id}
+                    className="rounded-2xl border border-zinc-100 bg-white p-6 shadow-sm se-motion se-card-in se-hover-lift"
+                    style={{ animationDelay: `${Math.min(idx, 12) * 60}ms` }}
+                  >
+                    <div className="mb-4 flex items-start justify-between gap-4">
+                      <div className="flex items-center gap-3">
+                        <div className="h-12 w-12 overflow-hidden rounded-xl border border-zinc-200 bg-zinc-50">
+                          {goal.imageUrl ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={goal.imageUrl} alt={goal.title} className="h-full w-full object-cover" />
+                          ) : (
+                            <div className="flex h-full w-full items-center justify-center text-[11px] font-semibold text-zinc-400">
+                              IMG
+                            </div>
+                          )}
                         </div>
-                      )}
+
+                        <div>
+                          <h3 className="text-lg font-medium text-zinc-900">{goal.title}</h3>
+                          <p className="text-xs text-zinc-400">
+                            Target: {formatMoney(goal.target, settings.currency, settings.language)}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <StatusChip done={done} />
+                        <button
+                          type="button"
+                          onClick={() => openEditModal(goal)}
+                          className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-zinc-200 text-zinc-600 transition hover:bg-zinc-50"
+                          aria-label={`Edit ${goal.title}`}
+                        >
+                          <IconEdit />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleDelete(goal)}
+                          disabled={actionGoalId === goal.id}
+                          className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-rose-200 text-rose-600 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
+                          aria-label={`Delete ${goal.title}`}
+                        >
+                          <IconTrash />
+                        </button>
+                      </div>
                     </div>
 
-                    <div>
-                      <h3 className="text-lg font-medium text-zinc-900">{g.title}</h3>
-                      <p className="text-xs text-zinc-400">
-                        Target: {formatMoney(g.target, settings.currency, settings.language)}
-                      </p>
+                    <div className="mb-3 h-2 w-full rounded-full bg-zinc-100">
+                      <div className="h-2 rounded-full bg-blue-600" style={{ width: `${pct}%` }} />
+                    </div>
+
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-zinc-500">
+                        Saved: {formatMoney(goal.saved, settings.currency, settings.language)}
+                      </span>
+                      <span className="text-zinc-400">
+                        Remaining: {formatMoney(remaining, settings.currency, settings.language)}
+                      </span>
+                    </div>
+
+                    <div className="mt-4 rounded-2xl border border-zinc-100 bg-zinc-50 p-4">
+                      <div className="flex items-center justify-between text-xs text-zinc-500">
+                        <span>Contribution / month</span>
+                        <span>{formatMoney(goal.contributingMonthly, settings.currency, settings.language)}</span>
+                      </div>
+                      <div className="mt-2 flex items-center justify-between text-xs text-zinc-500">
+                        <span>Progress</span>
+                        <span>{pct}% complete</span>
+                      </div>
+                      <div className="mt-2 flex items-center justify-between text-xs text-zinc-500">
+                        <span>Estimated time left</span>
+                        <span>{done ? "Reached" : monthsLeft > 0 ? `${monthsLeft} month${monthsLeft > 1 ? "s" : ""}` : "Set a monthly amount"}</span>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 flex items-center justify-between gap-3">
+                      <span className="text-xs font-medium text-zinc-500">
+                        Keep this goal fresh by topping it up whenever you save.
+                      </span>
+
+                      <button
+                        type="button"
+                        onClick={() => void addMonthlyContribution(goal)}
+                        disabled={actionGoalId === goal.id || done}
+                        className="inline-flex items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm se-btn hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {done
+                          ? "Completed"
+                          : `+ Add ${formatMoney(goal.contributingMonthly || 0, settings.currency, settings.language)}`}
+                      </button>
                     </div>
                   </div>
+                );
+              })}
+            </div>
 
-                  <span className="text-sm font-semibold text-zinc-900">{pct}%</span>
-                </div>
-
-                <div className="mb-3 h-2 w-full rounded-full bg-zinc-100">
-                  <div className="h-2 rounded-full bg-blue-600" style={{ width: `${pct}%` }} />
-                </div>
-
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-zinc-500">
-                    Saved: {formatMoney(g.saved, settings.currency, settings.language)}
-                  </span>
-                  <span className="text-zinc-400">
-                    Remaining: {formatMoney(Math.max(0, g.target - g.saved), settings.currency, settings.language)}
-                  </span>
-                </div>
-
-                <div className="mt-4 flex items-center justify-between gap-3">
-                  <span className="text-xs font-medium text-zinc-500">
-                    Contributing {formatMoney(g.contributingMonthly, settings.currency, settings.language)} / month
-                  </span>
-
-                  <button
-                    type="button"
-                    onClick={() => addContribution(g.id, g.contributingMonthly || 50)}
-                    className="inline-flex items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm se-btn hover:bg-blue-700"
-                  >
-                    + Add {formatMoney(g.contributingMonthly || 50, settings.currency, settings.language)}
-                  </button>
-                </div>
+            {!loading && goals.length === 0 ? (
+              <div className="rounded-2xl border border-zinc-100 bg-zinc-50 px-4 py-14 text-center text-sm text-zinc-500">
+                No goals yet. Create your first one and start tracking progress.
               </div>
-            );
-          })}
-        </div>
+            ) : null}
           </div>
         </div>
       </main>
 
-      {open && (
+      {open ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 se-motion se-modal-overlay">
           <button
             type="button"
@@ -488,8 +555,14 @@ export default function GoalsPage() {
           <div className="relative w-full max-w-[520px] rounded-2xl bg-white p-6 shadow-xl se-motion se-modal-panel">
             <div className="flex items-start justify-between">
               <div>
-                <h2 className="text-lg font-semibold text-zinc-900">Create goal</h2>
-                <p className="mt-1 text-sm text-zinc-500">Add a goal, target amount, and optional image.</p>
+                <h2 className="text-lg font-semibold text-zinc-900">
+                  {modalMode === "edit" ? "Edit goal" : "Create goal"}
+                </h2>
+                <p className="mt-1 text-sm text-zinc-500">
+                  {modalMode === "edit"
+                    ? "Update target, progress, or the visual card."
+                    : "Add a goal, target amount, and optional image."}
+                </p>
               </div>
 
               <button
@@ -523,11 +596,25 @@ export default function GoalsPage() {
                       <input type="file" accept="image/*" onChange={onPickImage} className="hidden" />
                     </label>
 
-                    <p className="mt-2 text-xs text-zinc-500">
-                      {imageFileName
-                        ? imageFileName
-                        : "PNG/JPG recommended. It will display as a small square on the card."}
-                    </p>
+                    <div className="mt-2 flex flex-wrap items-center gap-3">
+                      <p className="text-xs text-zinc-500">
+                        {imageFileName
+                          ? imageFileName
+                          : "PNG/JPG recommended. It will display as a small square on the card."}
+                      </p>
+                      {imagePreviewUrl ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setImagePreviewUrl("");
+                            setImageFileName("");
+                          }}
+                          className="text-xs font-semibold text-rose-600"
+                        >
+                          Remove image
+                        </button>
+                      ) : null}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -593,22 +680,27 @@ export default function GoalsPage() {
                 </button>
                 <button
                   type="button"
-                  onClick={addGoal}
+                  onClick={() => void saveGoal()}
                   disabled={savingGoal}
-                  className="h-11 rounded-xl bg-blue-600 px-5 text-sm font-semibold text-white shadow-sm se-btn hover:bg-blue-700"
+                  className="h-11 rounded-xl bg-blue-600 px-5 text-sm font-semibold text-white shadow-sm se-btn hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {savingGoal ? "Creating..." : "Create"}
+                  {savingGoal
+                    ? modalMode === "edit"
+                      ? "Saving..."
+                      : "Creating..."
+                    : modalMode === "edit"
+                    ? "Save Changes"
+                    : "Create"}
                 </button>
               </div>
 
               <p className="text-[11px] text-zinc-400">
-                The selected image will be saved with this goal and stay visible after refresh.
+                The selected image is stored with the goal card so it stays visible after refresh.
               </p>
-              
             </div>
           </div>
         </div>
-      )}
+      ) : null}
     </div>
   );
 }

@@ -125,7 +125,7 @@ export default function SignupPage() {
     setSocialLoading(provider);
 
     try {
-      await signInWithSocialProvider(provider);
+      await signInWithSocialProvider(provider, "signup");
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Unable to continue with social sign-in.";

@@ -1,14 +1,35 @@
 "use client";
 
 import Image from "next/image";
+import Link from "next/link";
+import { useState } from "react";
+import { AUTH_ROUTES, type SocialAuthIntent } from "@/src/lib/authFlow";
+import { toFriendlyAuthMessage } from "@/src/lib/authMessages";
+import { signInWithSocialProvider } from "@/src/lib/socialAuth";
 
 export default function HomePage() {
+  const [socialIntentLoading, setSocialIntentLoading] = useState<SocialAuthIntent | null>(null);
+  const [socialError, setSocialError] = useState<string | null>(null);
+
+  async function handleGoogleStart(intent: SocialAuthIntent) {
+    setSocialError(null);
+    setSocialIntentLoading(intent);
+
+    try {
+      await signInWithSocialProvider("google", intent);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to continue with Google sign-in.";
+      setSocialError(toFriendlyAuthMessage(message));
+      setSocialIntentLoading(null);
+    }
+  }
+
   return (
-    <div className="min-h-screen overflow-x-hidden bg-white px-6 text-slate-900 md:px-10">
+    <div className="min-h-screen overflow-x-hidden bg-transparent px-6 text-slate-900 md:px-0">
       {/* Hero */}
       <section className="relative overflow-hidden">
         {/* decorative blob */}
-        <div className="pointer-events-none absolute -right-72 -top-24 h-[740px] w-[740px] rounded-full bg-slate-900/10 se-motion se-fade-up se-d1" />
+        <div className="pointer-events-none absolute -right-44 top-6 h-[720px] w-[720px] rounded-full bg-[radial-gradient(circle,rgba(226,232,240,0.78)_0%,rgba(241,245,249,0.58)_42%,rgba(255,255,255,0)_74%)] se-motion se-fade-up se-d1" />
 
         <div className="mx-auto grid max-w-[1440px] grid-cols-1 gap-10 py-16 md:grid-cols-2 md:py-24">
           {/* Left text */}
@@ -27,7 +48,45 @@ export default function HomePage() {
               Track expenses, manage bills, and grow your savings — all in one powerful platform.
             </p>
 
-            <div className="mt-8 flex flex-wrap items-center gap-10 se-motion se-fade-up se-d4">
+            <div className="mt-8 flex flex-wrap items-center gap-4 se-motion se-fade-up se-d4">
+              <button
+                type="button"
+                onClick={() => void handleGoogleStart("login")}
+                disabled={socialIntentLoading !== null}
+                className="inline-flex h-12 items-center justify-center rounded-full bg-[#111827] px-6 text-sm font-semibold text-white transition hover:bg-[#1F2937] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {socialIntentLoading === "login" ? "Redirecting..." : "Log in with Google"}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleGoogleStart("signup")}
+                disabled={socialIntentLoading !== null}
+                className="inline-flex h-12 items-center justify-center rounded-full border border-zinc-200 bg-white px-6 text-sm font-semibold text-zinc-900 transition hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {socialIntentLoading === "signup" ? "Redirecting..." : "Sign up with Google"}
+              </button>
+            </div>
+
+            {socialError ? (
+              <p className="mt-4 max-w-xl text-sm text-red-500 se-motion se-fade-up se-d4">{socialError}</p>
+            ) : null}
+
+            <div className="mt-4 flex flex-wrap items-center gap-4 se-motion se-fade-up se-d4">
+              <Link
+                href={AUTH_ROUTES.emailContinue}
+                className="inline-flex items-center text-sm font-semibold text-zinc-900 underline underline-offset-4"
+              >
+                Continue with email
+              </Link>
+              <Link
+                href={AUTH_ROUTES.signup}
+                className="inline-flex items-center text-sm font-semibold text-zinc-900 underline underline-offset-4"
+              >
+                Continue with email sign up
+              </Link>
+            </div>
+
+            <div className="mt-6 flex flex-wrap items-center gap-10 se-motion se-fade-up se-d4">
               <a href="#" className="inline-flex items-center se-btn">
                 <img
                   src="/google-download.png"
@@ -121,7 +180,7 @@ export default function HomePage() {
             "Analyze your finance with beautiful, simple lists and budget cards.",
             "Know your top categories and keep your spending under control.",
           ]}
-          image="/spendgoal.png"
+          image="/Spendgoal.png"
           imageAlt="Budget list"
           reverse={true}
         />
@@ -211,5 +270,3 @@ function StepRow({
   );
   
 }
-
-

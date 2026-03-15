@@ -1,89 +1,153 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
-import AuthStudentIllustration from "@/components/auth/AuthStudentIllustration";
-import { AUTH_ROUTES } from "@/src/lib/authFlow";
+import { AUTH_ROUTES, clearSocialAuthIntent } from "@/src/lib/authFlow";
 import { toFriendlyAuthMessage } from "@/src/lib/authMessages";
 import { getSupabaseBrowserClient } from "@/src/lib/supabaseBrowser";
 
+function getTokensFromHash() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const hash = window.location.hash;
+  if (!hash || !hash.includes("access_token")) {
+    return null;
+  }
+
+  const params = new URLSearchParams(hash.replace("#", ""));
+  const access_token = params.get("access_token");
+  const refresh_token = params.get("refresh_token");
+
+  if (!access_token || !refresh_token) {
+    return null;
+  }
+
+  return { access_token, refresh_token };
+}
+
 export default function OAuthCallbackPage() {
   const router = useRouter();
-  const [message, setMessage] = useState("Finishing sign-in...");
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [message, setMessage] = useState("Signing you in...");
 
   useEffect(() => {
-    const supabase = getSupabaseBrowserClient();
+    let active = true;
 
+    const supabase = getSupabaseBrowserClient();
     if (!supabase) {
-      setErrorMsg(
-        "Supabase keys are missing. Please set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY."
-      );
+      router.replace(AUTH_ROUTES.login);
       return;
     }
 
     const client = supabase;
 
-    let active = true;
+    function redirectToLogin(nextMessage: string) {
+      clearSocialAuthIntent();
+      setMessage(nextMessage);
+
+      window.setTimeout(() => {
+        if (!active) {
+          return;
+        }
+
+        router.replace(AUTH_ROUTES.login);
+      }, 500);
+    }
 
     const { data: authListener } = client.auth.onAuthStateChange((_event, session) => {
       if (!active || !session) {
         return;
       }
 
+      clearSocialAuthIntent();
       router.replace(AUTH_ROUTES.dashboard);
     });
 
     async function finishOAuth() {
       const url = new URL(window.location.href);
-      const providerError = url.searchParams.get("error_description") ?? url.searchParams.get("error");
+      const providerError =
+        url.searchParams.get("error_description") ?? url.searchParams.get("error");
+      const code = url.searchParams.get("code");
+      const tokens = getTokensFromHash();
 
       if (providerError) {
+        redirectToLogin(toFriendlyAuthMessage(providerError));
+        return;
+      }
+
+      if (code) {
+        setMessage("Confirming your Google sign-in...");
+
+        const { error } = await client.auth.exchangeCodeForSession(code);
         if (!active) {
           return;
         }
 
-        setErrorMsg(toFriendlyAuthMessage(providerError));
+        if (error) {
+          redirectToLogin(toFriendlyAuthMessage(error.message));
+          return;
+        }
+
+        clearSocialAuthIntent();
+        router.replace(AUTH_ROUTES.dashboard);
+        return;
+      }
+
+      if (tokens) {
+        setMessage("Restoring your session...");
+
+        const { error } = await client.auth.setSession(tokens);
+        if (!active) {
+          return;
+        }
+
+        if (error) {
+          redirectToLogin(toFriendlyAuthMessage(error.message));
+          return;
+        }
+
+        clearSocialAuthIntent();
+        router.replace(AUTH_ROUTES.dashboard);
         return;
       }
 
       const { data, error } = await client.auth.getSession();
-
       if (!active) {
         return;
       }
 
       if (error) {
-        setErrorMsg(toFriendlyAuthMessage(error.message));
+        redirectToLogin(toFriendlyAuthMessage(error.message));
         return;
       }
 
       if (data.session) {
+        clearSocialAuthIntent();
         router.replace(AUTH_ROUTES.dashboard);
         return;
       }
 
-      setMessage("Waiting for your provider to confirm sign-in...");
+      setMessage("Waiting for sign-in to finish...");
 
       window.setTimeout(async () => {
         const retry = await client.auth.getSession();
-
         if (!active) {
           return;
         }
 
         if (retry.data.session) {
+          clearSocialAuthIntent();
           router.replace(AUTH_ROUTES.dashboard);
           return;
         }
 
         if (retry.error) {
-          setErrorMsg(toFriendlyAuthMessage(retry.error.message));
+          redirectToLogin(toFriendlyAuthMessage(retry.error.message));
           return;
         }
 
-        setErrorMsg("Social sign-in did not complete. Please try again.");
+        redirectToLogin("Google sign-in did not complete. Redirecting to login...");
       }, 1200);
     }
 
@@ -96,41 +160,10 @@ export default function OAuthCallbackPage() {
   }, [router]);
 
   return (
-    <div className="min-h-screen bg-transparent">
-      <main className="mx-auto flex min-h-[80vh] max-w-6xl items-center justify-center px-6 py-16 md:px-20">
-        <div className="grid w-full grid-cols-1 items-center gap-16 lg:grid-cols-2">
-          <section className="flex justify-center lg:justify-start">
-            <div className="auth-panel auth-delay-1 surface-card flex w-full max-w-[520px] min-h-[520px] flex-col justify-center rounded-3xl px-10 py-14 md:px-12">
-              <div className="auth-form-stack text-center">
-                <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-zinc-900 text-white shadow-sm">
-                  <div className="h-6 w-6 animate-spin rounded-full border-2 border-white/25 border-t-white" />
-                </div>
-
-                <h1 className="mt-6 text-3xl font-semibold text-zinc-900">
-                  Connecting account
-                </h1>
-
-                <p className="mt-3 text-sm text-zinc-500">
-                  {errorMsg ? errorMsg : message}
-                </p>
-
-                {errorMsg ? (
-                  <div className="mt-6 text-sm">
-                    <Link
-                      href={AUTH_ROUTES.login}
-                      className="font-semibold text-zinc-900 underline underline-offset-2"
-                    >
-                      Back to login
-                    </Link>
-                  </div>
-                ) : null}
-              </div>
-            </div>
-          </section>
-
-          <AuthStudentIllustration alt="Student waiting for social sign-in to finish" />
-        </div>
-      </main>
+    <div className="flex min-h-screen items-center justify-center bg-white px-6">
+      <div className="rounded-3xl border border-zinc-200 bg-white px-8 py-10 shadow-sm">
+        <p className="text-base font-medium text-zinc-700">{message}</p>
+      </div>
     </div>
   );
 }

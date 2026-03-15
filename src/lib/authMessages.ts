@@ -18,6 +18,18 @@ export function toFriendlyAuthMessage(message: string) {
   }
 
   if (
+    normalized.includes("user not found") ||
+    normalized.includes("signups not allowed for otp") ||
+    normalized.includes("email not found")
+  ) {
+    return "We couldn't find an account with that email yet. Create an account first, then use continue with email.";
+  }
+
+  if (normalized.includes("bad_oauth_state") || normalized.includes("oauth state")) {
+    return "Google sign-in was started from a different tab, site, or old deployment. Close old auth tabs and try again from this page.";
+  }
+
+  if (
     normalized.includes("provider is not enabled") ||
     normalized.includes("unsupported provider")
   ) {

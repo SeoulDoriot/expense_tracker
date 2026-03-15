@@ -16,6 +16,10 @@ export function getSupabaseBrowserClient() {
     return null;
   }
 
-  browserClient = createClient(url, anonKey);
+  browserClient = createClient(url, anonKey, {
+    auth: {
+      flowType: "pkce",
+    },
+  });
   return browserClient;
 }

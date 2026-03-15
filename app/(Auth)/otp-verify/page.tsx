@@ -35,7 +35,8 @@ function OTPVerifyInner() {
   const router = useRouter();
 
   const email = searchParams.get("email");
-  const type = searchParams.get("type") === "recovery" ? "recovery" : "signup";
+  const rawType = searchParams.get("type");
+  const type = rawType === "recovery" ? "recovery" : rawType === "login" ? "login" : "signup";
 
   const [otp, setOtp] = useState<string[]>(Array(8).fill(""));
   const [message, setMessage] = useState<string>("");
@@ -87,7 +88,7 @@ function OTPVerifyInner() {
   }
 
   useEffect(() => {
-    if (type !== "signup") {
+    if (type === "recovery") {
       return;
     }
 
@@ -113,7 +114,11 @@ function OTPVerifyInner() {
         const { data } = await supabaseClient.auth.getSession();
         const sessionEmail = data.session?.user?.email?.toLowerCase();
 
-        if (!data.session || !pendingSignup?.password) {
+        if (!data.session) {
+          return;
+        }
+
+        if (type === "signup" && !pendingSignup?.password) {
           return;
         }
 
@@ -122,12 +127,16 @@ function OTPVerifyInner() {
         }
       }
 
-      if (!pendingSignup?.password) {
+      if (type === "signup" && !pendingSignup?.password) {
         return;
       }
 
       setLinkModeLoading(true);
-      setMessage("Finishing verification from your email link...");
+      setMessage(
+        type === "login"
+          ? "Signing you in from your email link..."
+          : "Finishing verification from your email link..."
+      );
 
       if (code) {
         const { error } = await supabaseClient.auth.exchangeCodeForSession(code);
@@ -149,14 +158,16 @@ function OTPVerifyInner() {
         }
       }
 
-      const completed = await finalizePendingSignup(supabaseClient);
-      if (!mounted) {
-        return;
-      }
+      if (type === "signup") {
+        const completed = await finalizePendingSignup(supabaseClient);
+        if (!mounted) {
+          return;
+        }
 
-      if (!completed) {
-        setLinkModeLoading(false);
-        return;
+        if (!completed) {
+          setLinkModeLoading(false);
+          return;
+        }
       }
 
       router.replace(AUTH_ROUTES.dashboard);
@@ -167,7 +178,7 @@ function OTPVerifyInner() {
     return () => {
       mounted = false;
     };
-  }, [router, type]);
+  }, [email, router, type]);
 
   async function handleVerify() {
     if (!email) {
@@ -187,7 +198,7 @@ function OTPVerifyInner() {
       return;
     }
 
-    const verifyType = type === "signup" ? "email" : "recovery";
+    const verifyType = type === "recovery" ? "recovery" : "email";
     const { error } = await supabase.auth.verifyOtp({
       email,
       token: finalOtp,
@@ -260,10 +271,15 @@ function OTPVerifyInner() {
     }
 
     const pendingSignup = readPendingSignup();
-    if (pendingSignup?.email) {
+    if (type === "signup" && pendingSignup?.email) {
       router.replace(`${AUTH_ROUTES.otpVerify}?email=${encodeURIComponent(pendingSignup.email)}&type=signup`);
+      return;
     }
-  }, [email, router]);
+
+    router.replace(
+      type === "login" ? AUTH_ROUTES.emailContinue : type === "recovery" ? AUTH_ROUTES.login : AUTH_ROUTES.signup
+    );
+  }, [email, router, type]);
 
   function setDigit(index: number, value: string) {
     const v = value.replace(/[^0-9]/g, "").slice(0, 1);
@@ -312,9 +328,13 @@ function OTPVerifyInner() {
               <div className="h-8" />
               <div className="auth-form-stack">
                 <p className="mt-1 text-center text-sm text-zinc-400">
-                  We sent a verification email to{" "}
+                  {type === "recovery"
+                    ? "We sent a reset verification email to "
+                    : type === "login"
+                    ? "We sent a sign-in code to "
+                    : "We sent a verification email to "}
                   <span className="font-medium text-zinc-700"> {email ?? "your email"}</span>
-                  . Enter the 8-digit verification code below to finish verification.
+                  . Enter the 8-digit verification code below to continue.
                 </p>
 
                 <div className="mt-6 flex flex-wrap justify-center gap-3 md:gap-4">
@@ -366,11 +386,22 @@ function OTPVerifyInner() {
                     ? "Verifying..."
                     : type === "recovery"
                       ? "Continue"
-                      : "Verify account"}
+                      : type === "login"
+                        ? "Continue to dashboard"
+                        : "Verify account"}
                 </button>
 
                 <div className="mt-6 text-center text-xs text-zinc-400">
-                  <Link href={AUTH_ROUTES.signup} className="underline underline-offset-2 hover:text-zinc-600">
+                  <Link
+                    href={
+                      type === "login"
+                        ? AUTH_ROUTES.emailContinue
+                        : type === "recovery"
+                          ? AUTH_ROUTES.login
+                          : AUTH_ROUTES.signup
+                    }
+                    className="underline underline-offset-2 hover:text-zinc-600"
+                  >
                     Change email
                   </Link>
                 </div>

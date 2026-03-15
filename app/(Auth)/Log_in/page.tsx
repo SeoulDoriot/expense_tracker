@@ -77,7 +77,7 @@ export default function LoginPage() {
     setSocialLoading(provider);
 
     try {
-      await signInWithSocialProvider(provider);
+      await signInWithSocialProvider(provider, "login");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to continue with social sign-in.";
       setErrorMsg(toFriendlyAuthMessage(message));
@@ -116,6 +116,10 @@ export default function LoginPage() {
 
             <div className="mt-3 text-right text-xs text-zinc-500">
               <Link href={AUTH_ROUTES.forgotPassword}>Forgot Password ?</Link>
+            </div>
+
+            <div className="mt-3 text-right text-xs text-zinc-500">
+              <Link href={AUTH_ROUTES.emailContinue}>Continue with email code</Link>
             </div>
 
             {errorMsg && <p className="mt-4 text-sm text-red-500">{errorMsg}</p>}

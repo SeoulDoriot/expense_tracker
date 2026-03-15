@@ -402,20 +402,21 @@ export default function ProfilePage() {
     e.target.value = "";
   }
 
-  async function connect(provider: "google" | "apple") {
-    // Note: Supabase Apple OAuth needs extra setup in Supabase dashboard + Apple Developer.
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider,
-      options: {
-        redirectTo:
-          typeof window !== "undefined"
-            ? `${window.location.origin}/Profile`
-            : undefined,
-      },
-    });
 
-    if (error) alert(error.message);
-  }
+  
+  async function connect(provider: "google" | "apple") {
+  const { error } = await supabase.auth.signInWithOAuth({
+    provider,
+    options: {
+      redirectTo:
+        typeof window !== "undefined"
+          ? `${window.location.origin}/dashboard`
+          : undefined,
+    },
+  });
+
+  if (error) alert(error.message);
+}
 
   async function signOut() {
     await supabase.auth.signOut();
